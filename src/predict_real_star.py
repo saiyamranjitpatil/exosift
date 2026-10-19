@@ -1722,5 +1722,59 @@ def main():
     )
 
 
+# ============================================================
+# SCORE SEGMENT (for Streamlit app reuse)
+# ============================================================
+
+def score_segment(
+    time,
+    flux,
+    threshold=DEFAULT_THRESHOLD,
+    model=None,
+):
+    """
+    Preprocess a light-curve segment and score it with the variable-length CNN.
+
+    Parameters
+    ----------
+    time : array-like
+        Observation times in days.
+    flux : array-like
+        Flux measurements.
+    threshold : float
+        Planet score threshold.
+    model : tf.keras.Model or None
+        Loaded variable-length CNN. If None, loads cnn_1d_variable.keras.
+
+    Returns
+    -------
+    dict with keys:
+        planet_score : float
+        length : int
+        threshold : float
+        is_candidate : bool
+    """
+    import tensorflow as tf
+
+    time = np.asarray(time, dtype=np.float64)
+    flux = np.asarray(flux, dtype=np.float64)
+
+    if model is None:
+        model = tf.keras.models.load_model(VARIABLE_MODEL_PATH)
+
+    processed = preprocess_window(flux)
+
+    # Variable-length CNN accepts any length >= MIN_INFERENCE_LENGTH.
+    input_seq = processed[np.newaxis, :, np.newaxis].astype(np.float32)
+    planet_score = float(model.predict(input_seq, verbose=0)[0, 0])
+
+    return {
+        "planet_score": planet_score,
+        "length": len(processed),
+        "threshold": float(threshold),
+        "is_candidate": planet_score >= threshold,
+    }
+
+
 if __name__ == "__main__":
     main()
