@@ -1,0 +1,53 @@
+# Python environment
+.venv/
+venv/
+env/
+
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Private credentials / environment
+.env
+.env.*
+*.env
+secrets/
+*.key
+*.pem
+config.py
+*.ini
+
+# Data - raw Kaggle data is large and downloadable by users; processed arrays are regenerable
+data/raw/
+data/processed/
+
+# Generated model artifacts and outputs
+models/*.png
+models/plots/
+models/*.csv
+models/*.json
+models/real_star_predictions/
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated figures at project root
+*.png

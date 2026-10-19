@@ -1,0 +1,12 @@
+# ExoSift — minimal runtime dependencies
+# (Trimmed from the full 181-package environment freeze.)
+numpy==2.4.6
+pandas==2.3.3
+scikit-learn==1.9.1
+scipy==1.17.1
+tensorflow==2.21.0
+keras==3.15.1
+joblib==1.6.0
+matplotlib==3.11.2
+lightkurve==2.6.0
+astropy==8.0.1

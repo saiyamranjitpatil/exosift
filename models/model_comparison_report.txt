@@ -1,0 +1,61 @@
+ExoSift — Model Comparison Report
+=================================
+
+Dataset
+-------
+Training samples : 5087
+Test samples     : 570
+Training planets : 37
+Test planets     : 5
+
+Evaluation design
+-----------------
+The Random Forest and 1D CNN are evaluated on the same
+held-out Kaggle test set.
+
+Operating thresholds are selected only from validation data.
+
+The test set contains only five positive planet examples,
+so test metrics must be interpreted cautiously.
+
+Held-Out Test — Default Threshold 0.50
+--------------------------------------
+
+Random Forest:
+  ROC-AUC  : 0.8931
+  PR-AUC   : 0.2545
+  Precision: 0.0000
+  Recall   : 0.0000
+  F1       : 0.0000
+
+1D CNN:
+  ROC-AUC  : 0.9982
+  PR-AUC   : 0.7100
+  Precision: 0.8000
+  Recall   : 0.8000
+  F1       : 0.8000
+
+Validation-Selected Threshold
+-----------------------------
+
+Random Forest:
+  Threshold: 0.1148
+  Test F1  : 0.1778
+  Test Recall: 0.8000
+
+1D CNN:
+  Threshold: 0.0939
+  Test F1  : 0.9091
+  Test Recall: 1.0000
+
+Interpretation
+--------------
+
+PR-AUC, recall and F1 are emphasized because the dataset
+is extremely imbalanced.
+
+Accuracy is not used as the primary headline metric.
+
+The comparison is evidence about performance on this
+specific Kaggle dataset and split, not proof of real-world
+exoplanet discovery capability.
