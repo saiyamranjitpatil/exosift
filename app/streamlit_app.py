@@ -53,8 +53,8 @@ from predict_real_star import (
 from periodicity import detect_periods, best_period
 from phase_fold import fold_light_curve
 from repeated_transit import analyze_repeated_transits, is_repeatable
-from explainability import rank_candidate
 from calibration import CNNCalibrator
+from explainability import rank_candidate
 
 log = logging.getLogger("exosift.app")
 
@@ -149,6 +149,37 @@ def get_calibrator() -> CNNCalibrator:
 # PIPELINE (cached, no UI calls inside)
 # ============================================================
 
+def _iter_runs(time: np.ndarray, flux: np.ndarray):
+    """Yield (t, f) arrays for each contiguous run.
+
+    `find_contiguous_runs` has changed shape between versions of predict_real_star
+    (different number of arguments, different return types). This adapter accepts
+    the plausible variants and raises a TypeError that names what it actually got.
+    """
+    try:
+        params = inspect.signature(find_contiguous_runs).parameters.values()
+        n_positional = sum(
+            p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params
+        )
+    except (TypeError, ValueError):
+        n_positional = 2
+    runs = find_contiguous_runs(time, flux) if n_positional >= 2 else find_contiguous_runs(time)
+
+    for run in runs or []:
+        if isinstance(run, dict) and "time" in run:
+            yield np.asarray(run["time"]), np.asarray(run.get("flux", flux[: len(run["time"])]))
+        elif isinstance(run, slice):
+            yield time[run], flux[run]
+        elif isinstance(run, (tuple, list)) and len(run) == 2 and all(isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 2 for r in run):
+            yield np.asarray(run[0]), np.asarray(run[1])             # (time, flux) arrays
+        elif isinstance(run, (tuple, list)) and len(run) == 2 and all(isinstance(r, (int, np.integer)) for r in run):
+            yield time[run[0]:run[1]], flux[run[0]:run[1]]            # (start, stop) indices
+        elif isinstance(run, np.ndarray) and np.issubdtype(run.dtype, np.integer):
+            yield time[run], flux[run]                               # index array
+        else:
+            raise TypeError(f"unrecognised find_contiguous_runs() item: {type(run).__name__}")
+
+
 def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings: list):
     """Download products and return the best-scoring contiguous segment (or None)."""
     results = search_kepler(kic, quarter=quarter)
@@ -164,6 +195,11 @@ def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings
     products = [results[i] for i in range(min(total, max_products))]
 
     best = None
+    skipped: dict[str, list[str]] = {}      # reason -> quarters, so identical errors collapse to one note
+
+    def _skip(q: Optional[int], exc: Exception) -> None:
+        skipped.setdefault(f"{type(exc).__name__}: {exc}", []).append(f"Q{q}" if q is not None else "?")
+
     for product in products:
         q = extract_quarter(product)
         try:
@@ -175,23 +211,29 @@ def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings
             time = np.asarray(lc.time.value, dtype=np.float64)
             time_c, flux_c = clean_time_flux(time, flux)
 
-            for run in find_contiguous_runs(time_c, flux_c):
-                # Always score at the default threshold; the UI re-applies the
-                # user's threshold to the raw score, so the slider never re-runs this.
-                res = score_segment(run["time"], run["flux"], threshold=DEFAULT_THRESHOLD)
+            for seg_t, seg_f in _iter_runs(time_c, flux_c):
+                try:
+                    # Always score at the default threshold; the UI re-applies the
+                    # user's threshold to the raw score, so the slider never re-runs this.
+                    res = score_segment(seg_t, seg_f, threshold=DEFAULT_THRESHOLD)
+                except ValueError as exc:   # e.g. segment shorter than the CNN minimum: skip just this segment
+                    _skip(q, exc)
+                    continue
                 if best is None or res["planet_score"] > best["planet_score"]:
-                    run_time = np.asarray(run["time"], dtype=np.float64)
                     best = {
                         **res,
                         "quarter": q,
                         "flux_source": flux_source,
                         "time": time_c,
                         "flux": flux_c,
-                        "segment_span": (float(run_time[0]), float(run_time[-1])),
+                        "segment_span": (float(seg_t[0]), float(seg_t[-1])),
                     }
         except Exception as exc:  # noqa: BLE001 - one bad quarter must not abort the scan
             log.exception("Quarter %s failed", q)
-            warnings.append(f"Q{q if q is not None else '?'} skipped: {type(exc).__name__}: {exc}")
+            _skip(q, exc)
+
+    for reason, quarters in skipped.items():
+        warnings.append(f"Skipped {', '.join(quarters)} — {reason}")
     return best
 
 
@@ -495,13 +537,22 @@ else:
             st.error(f"Failed to fetch or prepare data: {type(exc).__name__}: {exc}")
             st.stop()
 
-    for w in result["warnings"]:
-        st.warning(w)
-
     best = result["best"]
+    notes = result["warnings"]
+
     if best is None:
+        run_pipeline.clear()   # never keep a failed result cached; the next click retries from scratch
         st.error("No usable Kepler data found for this target. Try a different KIC ID or quarter.")
+        if notes:
+            st.markdown("**Why nothing was usable:**")
+            for w in notes:
+                st.markdown(f"- {w}")
         st.stop()
+
+    if notes:
+        with st.expander(f"Scan notes ({len(notes)})"):
+            for w in notes:
+                st.markdown(f"- {w}")
 
     st.success(f"Found {best['real_cadences']} real observations (Q{best['quarter']}, {best['flux_source']})")
 
