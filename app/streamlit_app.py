@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -48,7 +47,9 @@ from predict_real_star import (
     clean_time_flux,
     find_contiguous_runs,
     score_segment,
+    extract_quarter,
     DEFAULT_THRESHOLD,
+    VARIABLE_MODEL_PATH,
 )
 from periodicity import detect_periods, best_period
 from phase_fold import fold_light_curve
@@ -65,7 +66,6 @@ log = logging.getLogger("exosift.app")
 MAX_PLOT_POINTS = 20_000          # decimate huge (e.g. short-cadence) curves for the browser
 DEFAULT_MAX_PRODUCTS = 6          # cap downloads when "all quarters" is selected
 N_PLANET, N_NON_PLANET = 37, 5_050
-QUARTER_RE = re.compile(r"Quarter\s*(\d+)", flags=re.IGNORECASE)
 # Streamlit >= ~1.50 deprecates use_container_width in favour of width="stretch".
 _HAS_WIDTH_ARG = "width" in inspect.signature(st.plotly_chart).parameters
 
@@ -124,11 +124,6 @@ def decimate(x: np.ndarray, y: np.ndarray, n: int = MAX_PLOT_POINTS):
     return x[idx], y[idx]
 
 
-def extract_quarter(product: Any) -> Optional[int]:
-    match = QUARTER_RE.search(str(product))
-    return int(match.group(1)) if match else None
-
-
 def run_stage(name: str, fn: Callable[[], Any], errors: dict) -> Any:
     """Run one pipeline stage; on failure record the error and return None."""
     try:
@@ -137,6 +132,13 @@ def run_stage(name: str, fn: Callable[[], Any], errors: dict) -> Any:
         log.exception("Stage %r failed", name)
         errors[name] = f"{type(exc).__name__}: {exc}"
         return None
+
+
+@st.cache_resource(show_spinner=False)
+def get_cnn_model():
+    """Load the variable-length CNN once per server process."""
+    import tensorflow as tf
+    return tf.keras.models.load_model(VARIABLE_MODEL_PATH)
 
 
 @st.cache_resource(show_spinner=False)
@@ -150,34 +152,10 @@ def get_calibrator() -> CNNCalibrator:
 # ============================================================
 
 def _iter_runs(time: np.ndarray, flux: np.ndarray):
-    """Yield (t, f) arrays for each contiguous run.
-
-    `find_contiguous_runs` has changed shape between versions of predict_real_star
-    (different number of arguments, different return types). This adapter accepts
-    the plausible variants and raises a TypeError that names what it actually got.
-    """
-    try:
-        params = inspect.signature(find_contiguous_runs).parameters.values()
-        n_positional = sum(
-            p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params
-        )
-    except (TypeError, ValueError):
-        n_positional = 2
-    runs = find_contiguous_runs(time, flux) if n_positional >= 2 else find_contiguous_runs(time)
-
-    for run in runs or []:
-        if isinstance(run, dict) and "time" in run:
-            yield np.asarray(run["time"]), np.asarray(run.get("flux", flux[: len(run["time"])]))
-        elif isinstance(run, slice):
-            yield time[run], flux[run]
-        elif isinstance(run, (tuple, list)) and len(run) == 2 and all(isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 2 for r in run):
-            yield np.asarray(run[0]), np.asarray(run[1])             # (time, flux) arrays
-        elif isinstance(run, (tuple, list)) and len(run) == 2 and all(isinstance(r, (int, np.integer)) for r in run):
-            yield time[run[0]:run[1]], flux[run[0]:run[1]]            # (start, stop) indices
-        elif isinstance(run, np.ndarray) and np.issubdtype(run.dtype, np.integer):
-            yield time[run], flux[run]                               # index array
-        else:
-            raise TypeError(f"unrecognised find_contiguous_runs() item: {type(run).__name__}")
+    """Yield (t, f) arrays for each contiguous run (longest first)."""
+    for run in find_contiguous_runs(time):
+        start, stop = run["start"], run["end"] + 1   # "end" is inclusive
+        yield time[start:stop], flux[start:stop]
 
 
 def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings: list):
@@ -215,7 +193,7 @@ def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings
                 try:
                     # Always score at the default threshold; the UI re-applies the
                     # user's threshold to the raw score, so the slider never re-runs this.
-                    res = score_segment(seg_t, seg_f, threshold=DEFAULT_THRESHOLD)
+                    res = score_segment(seg_t, seg_f, threshold=DEFAULT_THRESHOLD, model=get_cnn_model())
                 except ValueError as exc:   # e.g. segment shorter than the CNN minimum: skip just this segment
                     _skip(q, exc)
                     continue
@@ -225,7 +203,7 @@ def _scan_products(kic: int, quarter: Optional[int], max_products: int, warnings
                         "quarter": q,
                         "flux_source": flux_source,
                         "time": time_c,
-                        "flux": flux_c,
+                        "flux": flux_c / np.median(flux_c),   # relative flux: V2 depths are fractional, not e-/s
                         "segment_span": (float(seg_t[0]), float(seg_t[-1])),
                     }
         except Exception as exc:  # noqa: BLE001 - one bad quarter must not abort the scan
@@ -290,14 +268,20 @@ def run_pipeline(kic: int, quarter: Optional[int], max_products: int) -> dict:
     # ---- V2: composite ranking ----
     if top and rt is not None:
         def _rank():
-            depth = fold["transit_depth"] if fold and is_finite(fold.get("transit_depth")) else top["depth"]
+            # BLS depth is in noise-sigma units (detrend=True z-scores the flux); only the fold depth is fractional.
+            depth = fold["transit_depth"] if fold and is_finite(fold.get("transit_depth")) else None
+            # No RF score exists for a live target: drop its weight and renormalise, otherwise the composite is capped at 0.75.
+            weights = {"cnn": 0.25, "bls": 0.20, "depth": 0.15, "repeatability": 0.15}
+            total = sum(weights.values())
             score, components = rank_candidate(
                 cnn_probability=best["planet_score"],
                 rf_probability=None,
                 bls_sde=top["power"],
                 transit_depth=depth,
                 repeatability_score=rt["repeatability_score"],
+                weights={k: w / total for k, w in weights.items()},
             )
+            components.pop("rf", None)
             return float(score), components
 
         out["composite"] = run_stage("ranking", _rank, errors)
@@ -434,7 +418,6 @@ def render_periodicity(res: dict) -> None:
     with col4:
         st.metric("Best Period", f"{top['period_days']:.3f} days")
         st.metric("BLS Power (SDE)", f"{top['power']:.1f}")
-        st.metric("Transit Depth", f"{top['depth']:.5f}")
         st.metric("Duration", f"{top['duration_days'] * 24:.2f} hours")
 
 
@@ -447,7 +430,8 @@ def render_fold(res: dict) -> None:
         return
     fold = res["fold"]
     show_plot(plot_folded(fold, f"Phase Folded (P={res['top']['period_days']:.3f} d)"))
-    st.metric("Folded Transit Depth", fmt(fold.get("transit_depth"), ".5f"))
+    depth = fold.get("transit_depth")
+    st.metric("Folded Transit Depth", f"{depth * 100:.4f} %" if is_finite(depth) else "N/A")
 
 
 def render_repeated(res: dict) -> None:
@@ -554,7 +538,7 @@ else:
             for w in notes:
                 st.markdown(f"- {w}")
 
-    st.success(f"Found {best['real_cadences']} real observations (Q{best['quarter']}, {best['flux_source']})")
+    st.success(f"Scored a {best['length']:,}-point segment of real observations (Q{best['quarter']}, {best['flux_source']})")
 
     render_v1(best, kic)
     render_periodicity(result)

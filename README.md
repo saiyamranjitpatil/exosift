@@ -10,7 +10,7 @@ When a planet crosses in front of its host star, it can cause a small dip in mea
 
 **V1 (current):** End-to-end supervised classification pipeline — data inspection, preprocessing, feature engineering, Random Forest baseline, 1D CNN, validation + held-out test evaluation, model comparison, and real-Kepler-target inference via NASA/MAST and Lightkurve.
 
-**V2 (planned):** Transit periodicity detection, phase folding, repeated-transit evidence, candidate ranking & explainability, confidence calibration, and an interactive Kepler target analysis UI.
+**V2 (implemented):** Transit periodicity detection (BLS), phase folding, repeated-transit evidence, candidate ranking & explainability, confidence calibration, and an interactive Streamlit UI (`app/streamlit_app.py`).
 
 ## Repository contents
 
@@ -20,7 +20,7 @@ When a planet crosses in front of its host star, it can cause a small dip in mea
 | `data/raw/` | Kaggle CSV downloads (excluded from git — see `.gitignore`) |
 | `data/processed/` | Regenerable preprocessed arrays (excluded from git) |
 | `models/` | Trained model weights and evaluation artifacts |
-| `app/` | Placeholder for future interactive UI (V2) |
+| `app/` | Streamlit UI for interactive Kepler target analysis |
 | `notebooks/` | Placeholder for exploratory notebooks (V2) |
 
 ## Installation
@@ -30,6 +30,31 @@ When a planet crosses in front of its host star, it can cause a small dip in mea
 ```bash
 git clone https://github.com/saiyamranjitpatil/exosift.git
 cd exosift
+```
+
+### 2. Create a virtual environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# or: .venv\Scripts\activate  # Windows
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Download the Kaggle dataset
+
+The raw Kaggle Kepler data is **not** included in this repository (the training CSV is ~262 MB and exceeds GitHub file limits).
+
+Download `exoTrain.csv` and `exoTest.csv` from the Kaggle Kepler exoplanet dataset and place them in `data/raw/`:
+
+```
+data/raw/exoTrain.csv
+data/raw/exoTest.csv
 ```
 
 
@@ -64,6 +89,14 @@ python src/predict_real_star.py --kic 757076
 ```
 
 > Note: scripts import from `src/` using flat imports (`from preprocessing import ...`). Run from the project root so `src/` is on `sys.path`, or set `PYTHONPATH=src`.
+
+## Running the app (V2)
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+Enter a KIC ID (e.g. `757076`) and click **Analyze Target**. The first run downloads light curves from NASA/MAST and loads TensorFlow, so it can take a minute; repeat analyses of the same target are cached.
 
 ## Model architecture — 1D CNN
 
@@ -110,7 +143,7 @@ python src/predict_real_star.py --kic 757076
 3. **Uncalibrated scores:** CNN sigmoid outputs are not calibrated probabilities.
 4. **Variable-length CNN unvalidated:** Performance at lengths other than 3,197 (e.g., the 1,925-point real-star segment) has not yet been validated on labelled data. This is Priority A work.
 5. **Preprocessing tuned on Kaggle data:** Detrending/normalization parameters (trend window 101, MAD threshold 7.0, clip ±5.0) were tuned on the Kaggle CSV layout and may not be optimal for real Kepler quarters.
-6. **No periodicity or phase folding yet:** V1 classifies individual light-curve segments; it does not detect repeated transits or fold on a candidate period.
+6. **V2 periodicity is heuristic:** BLS "power" is a likelihood-based proxy, not a calibrated SDE, and short-period peaks near the 0.5-day search limit can reflect stellar variability or systematics rather than transits. Treat period/repeatability output as supporting evidence only.
 
 ## Contributing
 
@@ -119,27 +152,3 @@ This is a learning-oriented, scientifically careful project. Changes are made on
 ## License
 
 [To be added]
-### 2. Create a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# or: .venv\Scripts\activate  # Windows
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Download the Kaggle dataset
-
-The raw Kaggle Kepler data is **not** included in this repository (the training CSV is ~262 MB and exceeds GitHub file limits).
-
-Download `exoTrain.csv` and `exoTest.csv` from the Kaggle Kepler exoplanet dataset and place them in `data/raw/`:
-
-```
-data/raw/exoTrain.csv
-data/raw/exoTest.csv
-```
