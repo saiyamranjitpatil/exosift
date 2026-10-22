@@ -51,3 +51,6 @@ htmlcov/
 
 # Generated figures at project root
 *.png
+# Local agent tooling (machine-specific; symlinks into .venv)
+.claude/
+.agents/

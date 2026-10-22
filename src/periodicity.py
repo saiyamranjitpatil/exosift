@@ -55,6 +55,7 @@ def detect_periods(
     top_k=TOP_K,
     detrend=True,
     trend_window=101,
+    return_spectrum=False,
 ):
     """
     Detect candidate transit periods via Box Least Squares periodogram.
@@ -75,12 +76,19 @@ def detect_periods(
         If True, remove long-term trend before periodogram.
     trend_window : int
         Rolling-median window for detrending (odd number).
+    return_spectrum : bool
+        If True, also return the full BLS periodogram (see Returns).
+        Default False leaves the return value unchanged.
 
     Returns
     -------
     list of dict
         Each dict: {"period_days", "sde", "power", "depth",
         "duration_days", "transit_time"}. Sorted by SDE descending.
+
+    If ``return_spectrum`` is True, returns ``(candidates, spectrum)`` where
+    ``spectrum`` is a dict of equal-length arrays over the whole period grid:
+    {"period", "power", "depth", "duration", "transit_time"}.
     """
     time = np.asarray(time, dtype=np.float64)
     flux = np.asarray(flux, dtype=np.float64)
@@ -178,6 +186,16 @@ def detect_periods(
 
         if len(candidates) >= top_k:
             break
+
+    if return_spectrum:
+        spectrum = {
+            "period": np.asarray(result.period, dtype=np.float64),
+            "power": np.asarray(result.power, dtype=np.float64),
+            "depth": np.asarray(result.depth, dtype=np.float64),
+            "duration": np.asarray(result.duration, dtype=np.float64),
+            "transit_time": np.asarray(result.transit_time, dtype=np.float64),
+        }
+        return candidates, spectrum
 
     return candidates
 
